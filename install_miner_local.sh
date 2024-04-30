@@ -1,14 +1,12 @@
 #!/bin/bash
 set -euxo pipefail
 
-if [ $# -ne 2 ]
-then
-  >&2 echo "USAGE: ./install_miner.sh SSH_DESTINATION HOTKEY_PATH"
+if [ $# -ne 2 ]; then
+  >&2 echo "USAGE: ./install_miner.sh HOTKEY_PATH WALLET_DIR"
   exit 1
 fi
 
-SSH_DESTINATION="$1"
-LOCAL_HOTKEY_PATH=$(realpath "$2")
+LOCAL_HOTKEY_PATH=$(realpath "$1")
 LOCAL_COLDKEY_PUB_PATH=$(dirname "$(dirname "$LOCAL_HOTKEY_PATH")")/coldkeypub.txt
 
 if [ ! -f "$LOCAL_HOTKEY_PATH" ]; then
@@ -27,31 +25,15 @@ REMOTE_HOTKEY_PATH=".bittensor/wallets/$WALLET_NAME/hotkeys/$HOTKEY_NAME"
 REMOTE_COLDKEY_PUB_PATH=".bittensor/wallets/$WALLET_NAME/coldkeypub.txt"
 REMOTE_HOTKEY_DIR=$(dirname "$REMOTE_HOTKEY_PATH")
 
-# Copy the wallet files to the servsher
-# shellcheck disable=SC2087
-ssh "$SSH_DESTINATION" <<ENDSSH
-set -euxo pipefail
+# Copy the wallet files locally
+mkdir -p "$REMOTE_HOTKEY_DIR"
+cp "$LOCAL_HOTKEY_PATH" "$REMOTE_HOTKEY_PATH"
+cp "$LOCAL_COLDKEY_PUB_PATH" "$REMOTE_COLDKEY_PUB_PATH"
 
-mkdir -p $REMOTE_HOTKEY_DIR
-cat > tmpvars <<ENDCAT
-HOTKEY_NAME="$(basename "$REMOTE_HOTKEY_PATH")"
-WALLET_NAME="$(basename "$(dirname "$REMOTE_HOTKEY_DIR")")"
-ENDCAT
-ENDSSH
-scp "$LOCAL_HOTKEY_PATH" "$SSH_DESTINATION:$REMOTE_HOTKEY_PATH"
-scp "$LOCAL_COLDKEY_PUB_PATH" "$SSH_DESTINATION:$REMOTE_COLDKEY_PUB_PATH"
-
-# install necessary software in the server
-ssh "$SSH_DESTINATION" <<'ENDSSH'
-set -euxo pipefail
+# Install necessary software locally
 export DEBIAN_FRONTEND=noninteractive
 
-# install docker
-for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc
-do
-  (yes | sudo apt-get remove $pkg) || true
-done
-
+# Install Docker
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -65,9 +47,8 @@ echo \
 sudo apt-get update
 
 sudo apt-get install -y docker-ce docker-compose-plugin
-sudo usermod -aG docker $USER
 
-# install cuda
+# Install CUDA
 sudo apt-get install -y linux-headers-$(uname -r)
 DISTRIBUTION=$(. /etc/os-release; echo $ID$VERSION_ID | sed -e 's/\.//g')
 wget "https://developer.download.nvidia.com/compute/cuda/repos/$DISTRIBUTION/x86_64/cuda-keyring_1.0-1_all.deb"
@@ -87,12 +68,9 @@ sudo apt-get install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl stop docker
 sudo systemctl start docker
-ENDSSH
 
-# start a new ssh connection so that usermod changes are effective
-ssh "$SSH_DESTINATION" <<'ENDSSH'
-set -euxo pipefail
-mkdir ~/compute_horde_miner
+# Start Docker services
+mkdir -p ~/compute_horde_miner
 cd ~/compute_horde_miner
 
 cat > docker-compose.yml <<'ENDDOCKERCOMPOSE'
@@ -123,8 +101,8 @@ SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(25))')
 POSTGRES_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(16))')
 BITTENSOR_NETUID=12
 BITTENSOR_NETWORK=finney
-BITTENSOR_WALLET_NAME="$(. ~/tmpvars && echo "$WALLET_NAME")"
-BITTENSOR_WALLET_HOTKEY_NAME="$(. ~/tmpvars && echo "$HOTKEY_NAME")"
+BITTENSOR_WALLET_NAME="$WALLET_NAME"
+BITTENSOR_WALLET_HOTKEY_NAME="$HOTKEY_NAME"
 HOST_WALLET_DIR=$HOME/.bittensor/wallets
 BITTENSOR_MINER_PORT=40129
 BITTENSOR_MINER_ADDRESS=auto
@@ -137,5 +115,3 @@ docker pull backenddevelopersltd/compute-horde-executor:v0-latest
 docker pull backenddevelopersltd/compute-horde-miner:v0-latest
 docker pull backenddevelopersltd/compute-horde-job:v0-latest
 docker compose up -d
-
-ENDSSH
